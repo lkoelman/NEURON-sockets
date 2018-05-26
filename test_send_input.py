@@ -6,7 +6,7 @@ from time import sleep
 context = zmq.Context()
 
 #  Socket to talk to server
-print("Connecting to hello world server...")
+print("Connecting to NEURON Zmq socket...")
 socket = context.socket(zmq.PUB)
 socket.bind("tcp://*:5559")
 
@@ -30,6 +30,6 @@ try:
         print("Sending data {} ...".format(raw_data))
         socket.send(raw_data)
 
-except KeyboardInterrupt:
+except KeyboardInterrupt: # catches CTRL+C signal
     socket.close()
     sys.exit()

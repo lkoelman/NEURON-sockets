@@ -184,6 +184,7 @@ VERBATIM
         // We use PUB-SUB pattern where this is the subscriber,
         // so we use zqm_connect() and the publisher uses zmq_bind()
         char addr_buffer[21];
+        // TODO: consider using IPC which is slightly faster, see http://api.zeromq.org/3-2:zmq-ipc
         sprintf(addr_buffer, "tcp://localhost:%d", (int)port_number);
         int rc = zmq_connect(_p_donotuse_socket, addr_buffer);
         assert(rc==0);
