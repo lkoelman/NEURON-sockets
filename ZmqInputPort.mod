@@ -213,8 +213,14 @@ VERBATIM {
     int i;
     for(i = 0; i < MAX_GROUPS; ++i) {
         tgroups[i].group_id = i;
-        tgroups[i].ref_list = NULL;
         // tgroups[i].ref_vec = (void*)0;
+
+        // Make head of linked list
+        // tgroups[i].ref_list = NULL;
+        tgroups[i].ref_list = emalloc(sizeof(GroupNode));
+        tgroups[i].ref_list->initial_val = 0.0;
+        tgroups[i].ref_list->hoc_ref = NULL;
+        tgroups[i].ref_list->next = NULL;
     }
 
 }
@@ -241,15 +247,14 @@ VERBATIM {
         GroupNode* current = groups[i].ref_list;
         GroupNode* next_node;
         while (current != NULL) {
-            fprintf(stderr, "Freed one list for group %d\n", i);
+            // fprintf(stderr, "Freed one list for group %d\n", i);
             next_node = current->next;
             free(current);
             current = next_node;
         }
-        fprintf(stderr, "Freed list for group %d\n", i);
+        // fprintf(stderr, "Freed list for group %d\n", i);
     }
     // Free the group container
-    // fprintf(stderr, "Freed all linked lists\n");
     free(groups);
     // fprintf(stderr, "Freed group containers\n");
 }
@@ -268,16 +273,13 @@ VERBATIM
 
     // Look for end of linked list and append controlled variable
     GroupNode* current = target.ref_list;
-    GroupNode** pcurrent = &target.ref_list;
-    while (current != NULL) {
+    while (current->next != NULL) {
         current = current->next;
-        pcurrent = &(current->next);
     }
-    GroupNode* new_node = emalloc(sizeof(GroupNode));
-    new_node->next = NULL;
-    new_node->initial_val = temp_ref;
-    new_node->hoc_ref = _p_temp_ref;
-    *pcurrent = new_node;
+
+    current->next = emalloc(sizeof(GroupNode));
+    current->next->initial_val = temp_ref;
+    current->next->hoc_ref = _p_temp_ref;
 
     // fprintf(stderr, "Added ref to group %d\n", group_id);
 
@@ -328,9 +330,12 @@ void modify_group(double _lgroup_id, double _lweight) {
     // Modify all controlled variables
     GroupNode* current = target.ref_list;
     while (current != NULL) {
-        double new_val = _lweight * (current->initial_val);
-        *(current->hoc_ref) = new_val;
+        if (current->hoc_ref != NULL) {
+            double new_val = _lweight * (current->initial_val);
+            *(current->hoc_ref) = new_val;
+        }
         current = current->next;
+        // fprintf(stderr, "Modified one item in group %d\n", group_id);
     }
 
     // Same using Vector instead of linked list
