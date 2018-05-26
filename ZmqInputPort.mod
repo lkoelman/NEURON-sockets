@@ -1,6 +1,11 @@
 COMMENT
 
-TODO: description
+Set the value of Hoc variables (referenced by pointer) during the simulation
+based on incoming network packages.
+
+ZmqInputPort listens on a network socket for messages in the 
+format (group_id, value) and assigns value to all Hoc variables referenced
+by group_id.
 
 Written by Lucas Koelman
 
@@ -16,16 +21,18 @@ nrnivmodl -incflags -llibzmq -loadflags -l:libzmq.a
 EXAMPLE
 -------
 
-group1_refs = h.Vector([nc1._ref_weight[0], nc2._ref_weight[0]])
-group1_id = 1
+Example in Python:
 
-group2_refs = h.Vector([syn3._ref_gmax, syn4._ref_gmax])
-group2_id = 2
-
-port = h.ZmqInputPort()
-port.port_number = 5555
-port.add_target_group(group1_refs, group1_id)
-port.add_target_group(group2_refs, group2_id)
+>>> group1_refs = h.Vector([nc1._ref_weight[0], nc2._ref_weight[0]])
+>>> group1_id = 1
+>>> 
+>>> group2_refs = h.Vector([syn3._ref_gmax, syn4._ref_gmax])
+>>> group2_id = 2
+>>> 
+>>> port = h.ZmqInputPort()
+>>> port.port_number = 5555
+>>> port.add_target_group(group1_refs, group1_id)
+>>> port.add_target_group(group2_refs, group2_id)
 
 
 DEVNOTES
@@ -38,6 +45,7 @@ TODO:
     + can create one such object per host, and connect all
       the weights of synapses on same host
 
+
 Inspired by following examples:
 
 - NetStim.mod
@@ -45,9 +53,34 @@ Inspired by following examples:
 - feature.mod (found in nrn/src/nrnoc/feature.mod)
 - extra NMODL blocks declared in nrn/src/nmodl/parse1.y
 
+
 Working with C code inside VERBATIM blocks:
 
-- inside functions, "_l<func_name>" refers to the return value
+- mechanism variables
+    
+    - variables declared in PARAMETER/ASSIGNED can be accessed as follows:
+    - "varname" is the value of the variable
+    - "_p_varname" is a pointer to the variable
+
+
+- inside a FUNCTION block:
+    
+    - "_l<func_name>" refers to the return value
+    - "_l<varname>" refers to any LOCAL variable
+    - "_l<argname>" refers to any FUNCTION argument
+    
+    - getting the i-th argument: *getarg(i)
+    
+    - there are special functions to retrieve function arguments
+      as specific types
+        + e.g. vector_arg() for Hoc Vector
+        + e.g. nrn_random_arg() for Hoc Random
+
+
+- memory management
+
+    + emalloc() and ecalloc() are wrappers around malloc() and calloc()
+      that check if enough memory is available
 
 ENDCOMMENT
 
@@ -56,6 +89,7 @@ NEURON {
     POINTER donotuse_context
     POINTER donotuse_socket
     POINTER target_groups
+    POINTER temp_ref : temporary fix for difficulty passing pointer
     RANGE check_interval, port_number, blocking_socket
     GLOBAL context_num_users, context_initialized
 }
@@ -71,17 +105,36 @@ VERBATIM
 
 // Forward declare some useful NEURON functions
 extern int ifarg(int iarg);
-extern double* vector_vec(void* vv);
-extern int vector_capacity(void* vv);
-extern void* vector_arg(int iarg);
+// see <ivocvect.h>
+extern double* vector_vec(void* vv);        // vector to double*
+extern void* vector_arg(int iarg);          // function argument to vector
+extern int vector_capacity(void* vv);       // number of occupied slots
+extern int vector_buffer_size(void* vv);    // total number of slots
+extern void vector_resize(void*, int max);  // increase max capacity by resizing buffer
+extern void vector_append(void* vv, double x); // increment capacity and append
+extern void* vector_new0();                 // init with zero capacity
+extern void* vector_new1(int buffer_size);  // init with max capacity
+extern void vector_delete(void* vv);        // free memory
+
+// Linked list node for storing refs to controlled parameters
+typedef struct node {
+    double initial_val;  // save initial value of controlled variable
+    double* hoc_ref;      // hoc reference to controlled variable
+    struct node* next;  // next node in linked list
+} GroupNode;
 
 // Container for a group of target variables to control
 typedef struct {
-    int group_id;
-    void* ref_vec; // Hoc Vector containing references to controlled variables
+    int group_id;       // Unused for the time being, just use index as identifier.
+    // void* ref_vec;   // Hoc Vector containing references to controlled variables
+    GroupNode* ref_list; // Linked list containing references to controlled variables
 } TargetGroup;
 
 #define GETGROUPS TargetGroup** grps = (TargetGroup**)(&(_p_target_groups))
+
+// Max number of controlled groups (arbitrary)
+static const int MAX_GROUPS = 20;
+static const int GROUP_MAX_CAP = 100;
 
 ENDVERBATIM
 
@@ -96,6 +149,7 @@ ASSIGNED {
     socket_initialized : initial value before INITIAL is 0
     context_initialized
     context_num_users
+    temp_ref
 
     donotuse_context
     donotuse_socket
@@ -150,18 +204,17 @@ ENDVERBATIM
 
 CONSTRUCTOR {
 VERBATIM {
-    // Can hold maximum of 20 target groups
-    GETGROUPS;
-    int max_groups = 20;
-    TargetGroup* tgroups = (TargetGroup*)hoc_Emalloc(max_groups * sizeof(TargetGroup));
-    hoc_malchk();
+    // Snippet based on pattern.mod
+    GETGROUPS; // set local var TargetGroup** grps
+    TargetGroup* tgroups = emalloc(MAX_GROUPS * sizeof(TargetGroup));
     *grps = tgroups;
 
     // Initialize each group with group_id and empty reference vector
-    int igrp;
-    for(igrp = 0; igrp < max_groups; ++igrp) {
-        tgroups[igrp].group_id = igrp;
-        tgroups[igrp].ref_vec = (void*)0;
+    int i;
+    for(i = 0; i < MAX_GROUPS; ++i) {
+        tgroups[i].group_id = i;
+        tgroups[i].ref_list = NULL;
+        // tgroups[i].ref_vec = (void*)0;
     }
 
 }
@@ -171,47 +224,168 @@ ENDVERBATIM
 
 DESTRUCTOR {
 VERBATIM {
-    // cleanup code, e.g. free(mydata);
+    // Clean up ZMQ sockets
     context_num_users = context_num_users-1;
     zmq_close(_p_donotuse_socket);
     if (context_num_users == 0 && context_initialized){
         zmq_ctx_destroy(_p_donotuse_context);
         context_initialized = 0;
     }
+
+    // Free containers for controlled variable groups
+    GETGROUPS; // set local var TargetGroup** grps
+    TargetGroup* groups = *grps;
+    int i;
+    for(i = 0; i < MAX_GROUPS; ++i) {
+        // First free entire linked list
+        GroupNode* current = groups[i].ref_list;
+        GroupNode* next_node;
+        while (current != NULL) {
+            fprintf(stderr, "Freed one list for group %d\n", i);
+            next_node = current->next;
+            free(current);
+            current = next_node;
+        }
+        fprintf(stderr, "Freed list for group %d\n", i);
+    }
+    // Free the group container
+    // fprintf(stderr, "Freed all linked lists\n");
+    free(groups);
+    // fprintf(stderr, "Freed group containers\n");
 }
 ENDVERBATIM
 }
 
-FUNCTION handle_messages() {
+
+FUNCTION add_ref_to_group() { : if we define arguments it expects double
 VERBATIM
- {
+    uint32_t group_id = (uint32_t) *getarg(1);
+    assert(group_id < MAX_GROUPS);
+    
+    GETGROUPS; // set local var TargetGroup** grps
+    TargetGroup* groups = *grps;
+    TargetGroup  target = groups[group_id];
+
+    // Look for end of linked list and append controlled variable
+    GroupNode* current = target.ref_list;
+    GroupNode** pcurrent = &target.ref_list;
+    while (current != NULL) {
+        current = current->next;
+        pcurrent = &(current->next);
+    }
+    GroupNode* new_node = emalloc(sizeof(GroupNode));
+    new_node->next = NULL;
+    new_node->initial_val = temp_ref;
+    new_node->hoc_ref = _p_temp_ref;
+    *pcurrent = new_node;
+
+    // fprintf(stderr, "Added ref to group %d\n", group_id);
+
+    // Same using Vector instead of linked list
+    // NOTE: need to cast to safe type first, uintptr_t from <stdint.h> is made for this
+    // sprintf(stderr, "Sizes are: uintptr_t:%d, double:%d", (int)sizeof(uintptr_t), (int)sizeof(double));
+    // uintptr_t ref_address1 = (uintptr_t) _p_temp_ref;
+    // double ref_address = (double) ref_address1;
+    // if (target.ref_vec == NULL) { // NULL is (void*)0
+    //     // TODO: this doesn't work as I thought. Fix it.
+    //     // target.ref_vec = vector_new1(GROUP_MAX_CAP);
+    //     target.ref_vec = vector_new0();
+    //     // vector_resize(target.ref_vec, GROUP_MAX_CAP);
+    //     fprintf(stderr, "Vector with capacity %d and buffer size %d", vector_capacity(target.ref_vec), vector_buffer_size(target.ref_vec));
+    //     vector_append(target.ref_vec, ref_address);
+    //     fprintf(stderr, "Vector with capacity %d and buffer size %d", vector_capacity(target.ref_vec), vector_buffer_size(target.ref_vec));
+    // } else {
+    //     int cap = vector_capacity(target.ref_vec);
+    //     if (cap == vector_buffer_size(target.ref_vec));
+    //         vector_resize(target.ref_vec, cap + GROUP_MAX_CAP);
+    //     vector_append(target.ref_vec, ref_address);
+    // }
+ENDVERBATIM
+}
+
+
+: FUNCTION modify_group(group_id, weight) {
+    : Modify the controlled variables for the group.
+    :
+    : @param    1 : group_id (uint)
+    :           First argument is the  group ID which must be < MAX_GROUPS.
+    :
+    : @param    2 : weight (float)
+    :           Second argument is the value assigned to the controlled
+    :           variables.
+VERBATIM
+// Made into C function to avoid indirection through Hoc function
+void modify_group(double _lgroup_id, double _lweight) {
+
+    int group_id = (int)_lgroup_id;
+    assert(group_id < MAX_GROUPS);
+
+    // Get group by identifier
+    GETGROUPS; // set local var TargetGroup** grps
+    TargetGroup* groups = *grps;
+    TargetGroup  target = groups[group_id];
+
+    // Modify all controlled variables
+    GroupNode* current = target.ref_list;
+    while (current != NULL) {
+        double new_val = _lweight * (current->initial_val);
+        *(current->hoc_ref) = new_val;
+        current = current->next;
+    }
+
+    // Same using Vector instead of linked list
+    // int size = vector_capacity(target.ref_vec);
+    // // NOTE: vector_vec() returns float*, but if we fill the vector
+    // // with pointers to scalar variables (float*), we can use float**
+    // double** refvec = (double**) vector_vec(target.ref_vec);
+    // int i;
+    // for (i = 0; i < size; i++) {
+    //     // POINTER should be modifiable, see STDP weight adjuster mechanisms
+    //     // src/ivoc/ivocvect.cpp -> src/nrniv/vrecord.cpp -> src/nrncvode/vrecitem.h
+    //     *(refvec[i]) = _lweight;
+    // }
+}
+ENDVERBATIM
+: } : END FUNCTION
+
+
+FUNCTION handle_messages() {
+    LOCAL group_id, weight
+    : Read messages from socket and do modifications to controlled
+    : variables if necessary.
+VERBATIM
     fprintf(stderr, "Handling ZMQ messages.\n");
 
     // Default return value
     _lhandle_messages = 0;
 
     // Reive message in pre-agreed format
-    int num_ints = 2;
-    int buffer[num_ints]; // message consists of two integers
+    int msg_len = 2;
+    double buffer[msg_len]; // message consists of two integers
+    size_t buf_size = msg_len * sizeof(double);
     int flags = blocking_socket? 0 : ZMQ_DONTWAIT;
-    int size = zmq_recv(_p_donotuse_socket, buffer, num_ints*sizeof(int), flags);
+    // TODO: check if ZMQ_DONTWAIT defers filling of the buffer -> if so use it in next iteration
+    int size = zmq_recv(_p_donotuse_socket, buffer, buf_size, flags);
     
     if (size == -1) {
         fprintf(stderr, "Received nothing.\n");
-    } else if (size < num_ints) {
+    } else if (size < buf_size) {
         fprintf(stderr, "Only got %d bytes.\n", size);
     } else {
-        if (size > num_ints)
+        if (size > buf_size)
             fprintf(stderr, "Received more bytes than expected.\n");
 
         // Send spikes on depending on message contents
-        fprintf(stderr, "Got message [%d|%d].\n", buffer[0], buffer[1]);
-        if (buffer[1] > 0)
-            _lhandle_messages = 1;
+        fprintf(stderr, "Got message [%f|%f].\n", buffer[0], buffer[1]);
+        _lgroup_id = buffer[0];
+        _lweight = buffer[1];
+
+        modify_group(_lgroup_id, _lweight);
+        _lhandle_messages = 1;
     }
- }
 ENDVERBATIM
 }
+
 
 : Handle net events
 :
@@ -221,7 +395,7 @@ ENDVERBATIM
 : The built-in function net_send(delay, flag) delivers an event at time t+delay 
 : with flag value 'flag'
 :
-: @param    w : float
+: @param    w : double
 :           NetCon.weight[0] set on the NetCon that connects to this object
 :           (additional weights are retrieved by specifying additional args)
 :
