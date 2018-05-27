@@ -90,13 +90,13 @@ NEURON {
     POINTER donotuse_socket
     POINTER target_groups
     POINTER temp_ref : temporary fix for difficulty passing pointer
-    RANGE check_interval, port_number, blocking_socket
+    RANGE check_interval, port_number, blocking_socket, use_icp
     GLOBAL context_num_users, context_initialized
 }
 
 VERBATIM
 #include <zmq.h>
-// Following headers are included transitively in generated .c file:
+// Headers automatically included (transitively) in generated .c file:
 // #include <stdio.h>
 // #include <stdlib.h>
 // #include <assert.h>
@@ -104,17 +104,17 @@ VERBATIM
 // #include <string.h>
 
 // Forward declare some useful NEURON functions
-extern int ifarg(int iarg);
+// extern int ifarg(int iarg);
 // see <ivocvect.h>
-extern double* vector_vec(void* vv);        // vector to double*
-extern void* vector_arg(int iarg);          // function argument to vector
-extern int vector_capacity(void* vv);       // number of occupied slots
-extern int vector_buffer_size(void* vv);    // total number of slots
-extern void vector_resize(void*, int max);  // increase max capacity by resizing buffer
-extern void vector_append(void* vv, double x); // increment capacity and append
-extern void* vector_new0();                 // init with zero capacity
-extern void* vector_new1(int buffer_size);  // init with max capacity
-extern void vector_delete(void* vv);        // free memory
+// extern double* vector_vec(void* vv);        // vector to double*
+// extern void* vector_arg(int iarg);          // function argument to vector
+// extern int vector_capacity(void* vv);       // number of occupied slots
+// extern int vector_buffer_size(void* vv);    // total number of slots
+// extern void vector_resize(void*, int max);  // increase max capacity by resizing buffer
+// extern void vector_append(void* vv, double x); // increment capacity and append
+// extern void* vector_new0();                 // init with zero capacity
+// extern void* vector_new1(int buffer_size);  // init with max capacity
+// extern void vector_delete(void* vv);        // free memory
 
 // Linked list node for storing refs to controlled parameters
 typedef struct node {
@@ -142,6 +142,7 @@ PARAMETER {
     check_interval = 5 (ms) : refresh period
     port_number = 5555
     blocking_socket = 0
+    use_icp = 0             : use ICP rather than TCP protocol for communication
 }
 
 ASSIGNED {
@@ -156,52 +157,6 @@ ASSIGNED {
     target_groups
 }
 
-INITIAL {
-
-VERBATIM
-    static void* context;
-
-    if (!context_initialized) {
-        context_initialized = 1;
-        
-        // If we make multiple instances, only use one context.
-        // - make context GLOBAL
-        // - assign once (see feature.mod)
-        // see http://zguide.zeromq.org/page:all#Getting-the-Context-Right
-        context = zmq_ctx_new();
-    }
-    // Each instance pointer refers to the static one
-    _p_donotuse_context = context;
-    context_num_users = context_num_users + 1;
-    
-    // Make sure this is only executed once
-    if (!socket_initialized) {
-
-        // Assign to ASSIGNED pointer variables
-        // _p_donotuse_context = zmq_ctx_new();
-        _p_donotuse_socket = zmq_socket(_p_donotuse_context, ZMQ_SUB);
-
-        // We use PUB-SUB pattern where this is the subscriber,
-        // so we use zqm_connect() and the publisher uses zmq_bind()
-        char addr_buffer[21];
-        // TODO: consider using IPC which is slightly faster, see http://api.zeromq.org/3-2:zmq-ipc
-        sprintf(addr_buffer, "tcp://localhost:%d", (int)port_number);
-        int rc = zmq_connect(_p_donotuse_socket, addr_buffer);
-        assert(rc==0);
-        fprintf(stderr, "Set up ZMQ socket with return code %d at address %s.\n", rc, addr_buffer);
-        
-        // SUB socket filters out all messages initially -> need to add filters
-        // However, an empty filter value with length argument zero subscribes to all messages
-        rc = zmq_setsockopt(_p_donotuse_socket, ZMQ_SUBSCRIBE, NULL, 0);
-        assert(rc==0);
-    }
-
-ENDVERBATIM
-
-    socket_initialized = 1
-    on = 0
-    net_send(check_interval, 1)
-}
 
 CONSTRUCTOR {
 VERBATIM {
@@ -260,6 +215,55 @@ VERBATIM {
     // fprintf(stderr, "Freed group containers\n");
 }
 ENDVERBATIM
+}
+
+
+INITIAL {
+
+VERBATIM
+    static void* context;
+
+    if (!context_initialized) {
+        context_initialized = 1;
+        
+        // If we make multiple instances, only use one context.
+        // - make context GLOBAL
+        // - assign once (see feature.mod)
+        // see http://zguide.zeromq.org/page:all#Getting-the-Context-Right
+        context = zmq_ctx_new();
+    }
+    // Each instance pointer refers to the static one
+    _p_donotuse_context = context;
+    context_num_users = context_num_users + 1;
+    
+    // Make sure this is only executed once
+    if (!socket_initialized) {
+
+        // Assign to ASSIGNED pointer variables
+        // _p_donotuse_context = zmq_ctx_new();
+        _p_donotuse_socket = zmq_socket(_p_donotuse_context, ZMQ_SUB);
+
+        // We use PUB-SUB pattern where this is the subscriber,
+        // so we use zqm_connect() and the publisher uses zmq_bind()
+        char addr_buffer[21];
+        char *protocol = use_icp? "icp" : "tcp";
+        sprintf(addr_buffer, "%s://localhost:%d", protocol, (int)port_number);
+
+        int rc = zmq_connect(_p_donotuse_socket, addr_buffer);
+        assert(rc==0);
+        fprintf(stderr, "Set up ZMQ socket with return code %d at address %s.\n", rc, addr_buffer);
+        
+        // SUB socket filters out all messages initially -> need to add filters
+        // However, an empty filter value with length argument zero subscribes to all messages
+        rc = zmq_setsockopt(_p_donotuse_socket, ZMQ_SUBSCRIBE, NULL, 0);
+        assert(rc==0);
+    }
+
+ENDVERBATIM
+
+    socket_initialized = 1
+    on = 0
+    net_send(check_interval, 1)
 }
 
 
