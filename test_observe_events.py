@@ -24,6 +24,7 @@ for i in range(num_stims):
     stim.interval = 10 + i
     
     nc = h.NetCon(stim, observer)
+    nc.weight[0] = i # weight functions as identifier
     netcons.append(nc)
 
 

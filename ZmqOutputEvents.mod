@@ -35,6 +35,7 @@ Example in Python:
 >>>     stim.interval = 10 + i
 >>> 
 >>>     nc = h.NetCon(stim, observer)
+>>>     nc.weight[0] = i # weight functions as identifier
 >>>     netcons.append(nc)
 
 
@@ -66,7 +67,7 @@ NEURON {
 VERBATIM
 #include <zmq.h>
 
-// Max number of controlled groups (arbitrary)
+// Max number of events collected between flushes
 static const int EVENT_BUF_SIZE = 200;
 
 ENDVERBATIM
@@ -148,7 +149,10 @@ VERBATIM
         sprintf(addr_buffer, "%s://*:%d", protocol, (int)port_number);
         
         int rc = zmq_bind(_p_donotuse_socket, addr_buffer);
-        assert(rc==0);
+        if (rc != 0) {
+            fprintf(stderr, "Binding socket to %s failed with error code %d\n", addr_buffer, rc);
+            assert(0);
+        }
         fprintf(stderr, "Set up ZMQ socket with return code %d at address %s.\n", rc, addr_buffer);
     }
 
@@ -171,10 +175,11 @@ int flush_event_buffer() {
     int retval = 0;
 
     // No relevant flags for PUB send socket
-    int sent_size = zmq_send(_p_donotuse_socket, _p_donotuse_ebuffer, ebuf_next_pos, 0);
+    size_t msg_size = ebuf_next_pos * sizeof(double);
+    int sent_size = zmq_send(_p_donotuse_socket, _p_donotuse_ebuffer, msg_size, 0);
     
 
-    if (sent_size != ebuf_next_pos) {
+    if (sent_size != msg_size) {
         fprintf(stderr, "Sending of event buffer failed with error code %d.\n"
                         "%f events in buffer will be discarded.", sent_size, ebuf_next_pos/2);
         retval = 1;
