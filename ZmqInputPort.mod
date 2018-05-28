@@ -285,6 +285,7 @@ VERBATIM
     current->next = emalloc(sizeof(GroupNode));
     current->next->initial_val = temp_ref;
     current->next->hoc_ref = _p_temp_ref;
+    current->next->next = NULL;
 
     // fprintf(stderr, "Added ref to group %d\n", group_id);
 

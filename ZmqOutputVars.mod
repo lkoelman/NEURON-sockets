@@ -75,6 +75,7 @@ typedef struct {
 } TargetGroup;
 
 #define GETGROUPS TargetGroup** grps = (TargetGroup**)(&(_p_target_groups))
+#define GETEVENTBUFFER double** ppbuf = (double**)(&_p_donotuse_ebuffer);
 
 // Max number of observed groups (arbitrary)
 static const int MAX_GROUPS = 20;
@@ -133,7 +134,9 @@ VERBATIM {
 
     // Buffer to hold samples before sending to socket
     double* ebuffer = emalloc(EVENT_BUF_SIZE * sizeof(double));
-    _p_donotuse_ebuffer = ebuffer;
+    // GETEVENTBUFFER;
+    // *ppbuf = ebuffer;
+    _p_donotuse_ebuffer = ebuffer; // is this not equivalent and simpler?
 
 }
 ENDVERBATIM
@@ -240,6 +243,7 @@ VERBATIM
     current->next = emalloc(sizeof(GroupNode));
     current->next->var_id = _lvar_id;
     current->next->hoc_ref = _p_temp_ref;
+    current->next->next = NULL;
 
     // fprintf(stderr, "Added ref to group %d\n", group_id);
 ENDVERBATIM
@@ -258,8 +262,9 @@ static int flush_event_buffer() {
     int retval = 0;
 
     // No relevant flags for PUB send socket
-    size_t msg_size = ebuf_next_pos * sizeof(double);
-    int sent_size = zmq_send(_p_donotuse_socket, _p_donotuse_ebuffer, msg_size, 0);
+    double* ebuffer = _p_donotuse_ebuffer;
+    size_t msg_size = (size_t)ebuf_next_pos * sizeof(double);
+    int sent_size = zmq_send(_p_donotuse_socket, ebuffer, msg_size, 0);
     
 
     if (sent_size != msg_size) {
@@ -277,14 +282,19 @@ static int flush_event_buffer() {
 /**
  * Append an event received at time t to buffer.
  * If the buffer is full, flush it to socket first.
+ *
+ * @note    called every sample_period for each observed variable
+ *          so function call overhead might be significant -> inline
  */
-static void append_to_buffer(double var_id, double time, double value) {
+static inline void append_to_buffer(double var_id, double time, double value) {
+
+    double* ebuffer = _p_donotuse_ebuffer;
 
     // Assume buffer flushed if not enough space
     int pos = (int)ebuf_next_pos;
-    _p_donotuse_ebuffer[pos] = var_id;
-    _p_donotuse_ebuffer[pos+1] = time;
-    _p_donotuse_ebuffer[pos+3] = value;
+    ebuffer[pos] = var_id;
+    ebuffer[pos+1] = time;
+    ebuffer[pos+2] = value;
     ebuf_next_pos = (float)(pos + msg_len);
 
     // If buffer is full -> flush it
@@ -296,8 +306,11 @@ static void append_to_buffer(double var_id, double time, double value) {
 
 /**
  * Sample observed variables of all groups.
+ *
+ * @note    called every sample_period so function call overhead 
+ *          might be significant -> inline
  */
-static void sample_all_groups() {
+static inline void sample_all_groups() {
     GETGROUPS; // set local var TargetGroup** grps
     TargetGroup* groups = *grps;
 
