@@ -1,12 +1,22 @@
-Tried commands:
+# Description
+
+Streaming and control of NEURON simulations using OpenFrameworks 
+
+# Usage
+
+See python scripts `test_*.py`.
+
+# Installation
+
+- Set up a working NEURON installation
+
+- Make sure libzmq libraries are on your library path
+
+    + use the ones distributed through your operating system's package manager or get them yourself (see [libzmq GitHub page](https://github.com/zeromq/libzmq))
+
+- Compile NMODL mechanisms with static linking to zmq library:
 
 ```sh
-# Error when import neuron and loading libnrnmech.so
-nrnivmodl -incflags -I/usr/include/zmq.h -loadflags /usr/lib/x86_64-linux-gnu/libzmq.so
-
-# Error when importing neuron and loading libnrnmech.so
-nrnivmodl -incflags -llibzmq -loadflags -L/usr/lib/x86_64-linux-gnu
-
-# WORKS (-l:mylib.a instructs static linking)
+# -l:mylib.a instructs static linking
 nrnivmodl -incflags -llibzmq -loadflags -l:libzmq.a
 ```
