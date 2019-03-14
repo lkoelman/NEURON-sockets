@@ -20,3 +20,7 @@ See python scripts `test_*.py`.
 # -l:mylib.a instructs static linking
 nrnivmodl -incflags -llibzmq -loadflags -l:libzmq.a
 ```
+
+# Developer notes
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
